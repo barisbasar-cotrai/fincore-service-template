@@ -1,0 +1,31 @@
+# Custom values for Grafana Loki (simple/single-binary mode)
+# Tuned for demo — not production-grade
+
+loki:
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  auth_enabled: false
+
+singleBinary:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+
+# Promtail collects logs from all pods
+promtail:
+  enabled: true
+
+# Minimal resource usage for demo
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
