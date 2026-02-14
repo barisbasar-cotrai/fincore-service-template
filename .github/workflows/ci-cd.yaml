@@ -1,0 +1,116 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  ACR_NAME: acrfincoredev
+  ACR_LOGIN_SERVER: acrfincoredev.azurecr.io
+  AKS_CLUSTER: aks-fincore-dev
+  RESOURCE_GROUP: rg-fincore-dev
+  NAMESPACE: fincore
+  SERVICE_NAME: account-service
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest httpx
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+      - name: Lint check
+        run: |
+          pip install ruff
+          ruff check src/
+
+  build-and-push:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build container image
+        run: |
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+          docker tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+                     ${{ env.ACR_LOGIN_SERVER }}/${{ env.SERVICE_NAME }}:latest
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ACR_LOGIN_SERVER }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          exit-code: "1"
+          severity: "CRITICAL"
+          format: "table"
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Push to ACR
+        run: |
+          az acr login --name ${{ env.ACR_NAME }}
+          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.SERVICE_NAME }}:latest
+
+  deploy:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.RESOURCE_GROUP }}
+          cluster-name: ${{ env.AKS_CLUSTER }}
+
+      - name: Set image in manifests
+        run: |
+          sed -i "s|IMAGE_PLACEHOLDER|${{ env.ACR_LOGIN_SERVER }}/${{ env.SERVICE_NAME }}:${{ github.sha }}|g" k8s/deployment.yaml
+
+      - name: Deploy to AKS
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/servicemonitor.yaml
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/${{ env.SERVICE_NAME }} -n ${{ env.NAMESPACE }} --timeout=120s
+
+      - name: Deploy Grafana dashboard
+        run: |
+          kubectl create configmap ${{ env.SERVICE_NAME }}-dashboard \
+            --from-file=${{ env.SERVICE_NAME }}.json=grafana/dashboard.json \
+            -n monitoring --dry-run=client -o yaml | \
+            kubectl apply -f -
+          kubectl label configmap ${{ env.SERVICE_NAME }}-dashboard \
+            grafana_dashboard=1 -n monitoring --overwrite
+
+      - name: Smoke test
+        run: |
+          kubectl run smoke-test --rm -i --restart=Never -n ${{ env.NAMESPACE }} \
+            --image=curlimages/curl -- curl -sf http://${{ env.SERVICE_NAME }}/health
