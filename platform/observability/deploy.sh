@@ -1,6 +1,5 @@
 #!/bin/bash
 # Deploy the observability stack to AKS
-# Run this once after the cluster is provisioned
 
 set -euo pipefail
 
