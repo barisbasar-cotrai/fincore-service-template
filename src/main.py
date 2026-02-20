@@ -84,9 +84,9 @@ async def get_account(account_id: str):
     logger.info("Retrieved account: %s", account_id)
     return accounts[account_id]
 
-  @app.get("/api/v1/accounts/{account_id}/balance")
-  async def get_balance(account_id: str):
-      if account_id not in accounts:
-          raise HTTPException(status_code=404, detail="Account not found")
-      logger.info("Balance check: %s", account_id)
-      return {"account_id": account_id, "balance": accounts[account_id]["balance"]}
+@app.get("/api/v1/accounts/{account_id}/balance")
+async def get_balance(account_id: str):
+    if account_id not in accounts:
+        raise HTTPException(status_code=404, detail="Account not found")
+    logger.info("Balance check: %s", account_id)
+    return {"account_id": account_id, "balance": accounts[account_id]["balance"]}
